@@ -3,6 +3,8 @@
 mod app;
 mod assets;
 mod clap_app;
+#[cfg(feature = "application")]
+mod completions;
 mod config;
 mod directories;
 mod input;
@@ -14,6 +16,7 @@ use std::io::{BufReader, Write};
 use std::path::Path;
 use std::process;
 
+use bat::theme::DetectColorScheme;
 use nu_ansi_term::Color::Green;
 use nu_ansi_term::Style;
 
@@ -30,12 +33,12 @@ use directories::PROJECT_DIRS;
 use globset::GlobMatcher;
 
 use bat::{
-    assets::HighlightingAssets,
     config::Config,
     controller::Controller,
     error::*,
     input::Input,
     style::{StyleComponent, StyleComponents},
+    theme::{color_scheme, default_theme, ColorScheme},
     MappingTarget, PagingMode,
 };
 
@@ -189,7 +192,12 @@ fn theme_preview_file<'a>() -> Input<'a> {
     Input::from_reader(Box::new(BufReader::new(THEME_PREVIEW_DATA)))
 }
 
-pub fn list_themes(cfg: &Config, config_dir: &Path, cache_dir: &Path) -> Result<()> {
+pub fn list_themes(
+    cfg: &Config,
+    config_dir: &Path,
+    cache_dir: &Path,
+    detect_color_scheme: DetectColorScheme,
+) -> Result<()> {
     let assets = assets_from_cache_or_binary(cfg.use_custom_assets, cache_dir)?;
     let mut config = cfg.clone();
     let mut style = HashSet::new();
@@ -200,10 +208,14 @@ pub fn list_themes(cfg: &Config, config_dir: &Path, cache_dir: &Path) -> Result<
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
 
-    let default_theme = HighlightingAssets::default_theme();
+    let default_theme_name = default_theme(color_scheme(detect_color_scheme).unwrap_or_default());
     for theme in assets.themes() {
-        let default_theme_info = if default_theme == theme {
+        let default_theme_info = if !config.loop_through && default_theme_name == theme {
             " (default)"
+        } else if default_theme(ColorScheme::Dark) == theme {
+            " (default dark)"
+        } else if default_theme(ColorScheme::Light) == theme {
+            " (default light)"
         } else {
             ""
         };
@@ -337,6 +349,18 @@ fn run() -> Result<bool> {
         return Ok(true);
     }
 
+    #[cfg(feature = "application")]
+    if let Some(shell) = app.matches.get_one::<String>("completion") {
+        match shell.as_str() {
+            "bash" => println!("{}", completions::BASH_COMPLETION),
+            "fish" => println!("{}", completions::FISH_COMPLETION),
+            "ps1" => println!("{}", completions::PS1_COMPLETION),
+            "zsh" => println!("{}", completions::ZSH_COMPLETION),
+            _ => unreachable!("No completion for shell '{}' available.", shell),
+        }
+        return Ok(true);
+    }
+
     match app.matches.subcommand() {
         Some(("cache", cache_matches)) => {
             // If there is a file named 'cache' in the current working directory,
@@ -371,7 +395,7 @@ fn run() -> Result<bool> {
                 };
                 run_controller(inputs, &plain_config, cache_dir)
             } else if app.matches.get_flag("list-themes") {
-                list_themes(&config, config_dir, cache_dir)?;
+                list_themes(&config, config_dir, cache_dir, DetectColorScheme::default())?;
                 Ok(true)
             } else if app.matches.get_flag("config-file") {
                 println!("{}", config_file().to_string_lossy());
